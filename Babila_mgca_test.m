@@ -32,11 +32,12 @@ species_map = {
 age_prePETM = 56.0;   % Ma
 age_PETM    = 55.9;   % Ma
 
-% Depth cutoff (in meters) separating prePETM from PETM.
-% Rows with depth > petm_depth_cutoff_m are prePETM (deeper = older).
-% Rows with depth <= petm_depth_cutoff_m are PETM.
-% Adjust this value to match the PETM onset in your core.
-petm_depth_cutoff_m = 204.2;   % meters (~670 ft); rows deeper = prePETM, shallower = PETM
+% Depth cutoffs (in meters) defining the three intervals:
+%   prePETM:  depth > 204.2 m  (> 670 ft)   -- older
+%   PETM:     192.0 - 204.2 m  (630-670 ft) -- peak event
+%   postPETM: depth < 192.0 m  (< 630 ft)   -- younger; uses prePETM params
+petm_bottom_m = 204.2;   % PETM onset  (~670 ft)
+petm_top_m    = 192.0;   % PETM top    (~630 ft)
 
 % --- prePETM environmental parameters ---
 omega_prePETM    = 4.282963753;     % bottom water calcite saturation state
@@ -92,19 +93,23 @@ fprintf('Depth column:  "%s"\n\n', T.Properties.VariableNames{depthIdx});
 %% Locate Species column
 speciesIdx = find(strcmpi(colNames, 'species') | strcmpi(colNames, 'taxon'), 1);
 
-%% Split table into prePETM and PETM intervals
-depth_vals = T{:, depthIdx};
-petm_mask    = depth_vals <= petm_depth_cutoff_m;
-prepetm_mask = depth_vals >  petm_depth_cutoff_m;
+%% Split table into three intervals
+depth_vals   = T{:, depthIdx};
+prepetm_mask = depth_vals >  petm_bottom_m;
+petm_mask    = depth_vals >= petm_top_m & depth_vals <= petm_bottom_m;
+postpetm_mask= depth_vals <  petm_top_m;
 
-fprintf('Interval split at depth = %.1f m:\n', petm_depth_cutoff_m);
-fprintf('  PETM:    %d rows (depth <= %.1f m)\n', sum(petm_mask),    petm_depth_cutoff_m);
-fprintf('  prePETM: %d rows (depth >  %.1f m)\n\n', sum(prepetm_mask), petm_depth_cutoff_m);
+fprintf('Interval breakdown:\n');
+fprintf('  prePETM:  %d rows (depth > %.1f m / > 670 ft)\n',          sum(prepetm_mask),  petm_bottom_m);
+fprintf('  PETM:     %d rows (%.1f - %.1f m / 630-670 ft)\n',         sum(petm_mask),     petm_top_m, petm_bottom_m);
+fprintf('  postPETM: %d rows (depth < %.1f m / < 630 ft)\n\n',        sum(postpetm_mask), petm_top_m);
 
 %% Define intervals to process
+% postPETM uses same omega/pH as prePETM
 intervals = {
-    'PETM',    T(petm_mask, :),    age_PETM,    omega_PETM,    salinity_PETM,    pH_PETM;
-    'prePETM', T(prepetm_mask, :), age_prePETM, omega_prePETM, salinity_prePETM, pH_prePETM;
+    'prePETM',  T(prepetm_mask,  :), age_prePETM, omega_prePETM, salinity_prePETM, pH_prePETM;
+    'PETM',     T(petm_mask,     :), age_PETM,    omega_PETM,    salinity_PETM,    pH_PETM;
+    'postPETM', T(postpetm_mask, :), age_prePETM, omega_prePETM, salinity_prePETM, pH_prePETM;
 };
 
 %% Loop over intervals and species
@@ -177,22 +182,28 @@ for iInt = 1:size(intervals, 1)
                 sum(output.rhat > 1.1), int_name, excel_species);
         end
 
+        % Compute p16 and p84 from ensemble
+        sst_p16 = prctile(output.ens, 16, 2);
+        sst_p84 = prctile(output.ens, 84, 2);
+
         % Attach predictions to table
         Tsp.interval       = repmat({int_name},       Nobs, 1);
         Tsp.baymag_species = repmat({baymag_species}, Nobs, 1);
         Tsp.SST_2p5  = output.SST(:, 1);
+        Tsp.SST_16   = sst_p16;
         Tsp.SST_50   = output.SST(:, 2);
+        Tsp.SST_84   = sst_p84;
         Tsp.SST_97p5 = output.SST(:, 3);
         Tsp.Rhat     = output.rhat;
 
         all_rows = [all_rows; Tsp]; %#ok<AGROW>
 
         % Print results
-        fprintf('  %-8s  %-10s  %-10s  %-10s  %-6s\n', ...
-            'Row', 'Mg/Ca', 'SST_2.5%', 'SST_50%', 'Rhat');
+        fprintf('  %-8s  %-10s  %-8s  %-10s  %-8s  %-6s\n', ...
+            'Row', 'Mg/Ca', 'SST_16%', 'SST_50%', 'SST_84%', 'Rhat');
         for i = 1:Nobs
-            fprintf('  %-8d  %-10.3f  %-10.2f  %-10.2f  %-6.3f\n', ...
-                i, mgca(i), output.SST(i,1), output.SST(i,2), output.rhat(i));
+            fprintf('  %-8d  %-10.3f  %-8.2f  %-10.2f  %-8.2f  %-6.3f\n', ...
+                i, mgca(i), sst_p16(i), output.SST(i,2), sst_p84(i), output.rhat(i));
         end
         fprintf('\n');
 
@@ -212,9 +223,9 @@ end
 
 %% Plot SST vs depth for each species
 species_list  = unique(all_rows.Species, 'stable');
-interval_list = {'PETM', 'prePETM'};
-colors = struct('PETM', [0.85 0.33 0.10], 'prePETM', [0.00 0.45 0.74]);
-markers = struct('PETM', 'o', 'prePETM', 's');
+interval_list = {'prePETM', 'PETM', 'postPETM'};
+colors  = struct('prePETM', [0.00 0.45 0.74], 'PETM', [0.85 0.33 0.10], 'postPETM', [0.47 0.67 0.19]);
+markers = struct('prePETM', 's',              'PETM', 'o',               'postPETM', '^');
 
 depth_col = T.Properties.VariableNames{depthIdx};
 
@@ -235,8 +246,8 @@ for iSp = 1:length(species_list)
 
         depth  = all_rows.(depth_col)(mask);
         sst_50 = all_rows.SST_50(mask);
-        err_lo = all_rows.SST_50(mask) - all_rows.SST_2p5(mask);
-        err_hi = all_rows.SST_97p5(mask) - all_rows.SST_50(mask);
+        err_lo = all_rows.SST_50(mask) - all_rows.SST_16(mask);
+        err_hi = all_rows.SST_84(mask) - all_rows.SST_50(mask);
         col    = colors.(int_name);
         mkr    = markers.(int_name);
 
@@ -248,8 +259,10 @@ for iSp = 1:length(species_list)
         leg_labels{end+1}  = int_name; %#ok<AGROW>
     end
 
-    % Mark PETM onset depth
-    yline(petm_depth_cutoff_m, '--k', 'PETM onset', ...
+    % Mark PETM interval boundaries
+    yline(petm_bottom_m, '--k', 'PETM onset', ...
+        'LabelHorizontalAlignment', 'left', 'FontSize', 8);
+    yline(petm_top_m, '--k', 'PETM top', ...
         'LabelHorizontalAlignment', 'left', 'FontSize', 8);
 
     set(gca, 'YDir', 'reverse');
@@ -263,7 +276,7 @@ for iSp = 1:length(species_list)
     box on;
 end
 
-sgtitle('BAYMAG SST predictions (median ± 95% CI)');
+sgtitle('BAYMAG SST predictions (median ± 1\sigma, p16-p84)');
 
 % Save figure
 saveas(gcf, 'Babila_SST_plot.png');
