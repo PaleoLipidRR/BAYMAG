@@ -135,6 +135,7 @@ for iInt = 1:size(intervals, 1)
         baymag_species = species_map{iSp, 2};
 
         % Filter by species
+        
         if ~isempty(speciesIdx)
             mask = strcmpi(Tint{:, speciesIdx}, excel_species);
         else
